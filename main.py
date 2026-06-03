@@ -5,11 +5,11 @@ import anthropic
 import base64
 import os
 import json
+import traceback
 from typing import Optional
 
 app = FastAPI(title="PassportFill API")
 
-# Allow requests from Chrome extension and website
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -50,98 +50,72 @@ async def extract_passport(
     file: UploadFile = File(...),
     authorization: Optional[str] = Header(None)
 ):
-    # Validate API key from header
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="API ключ не передан")
 
     api_key = authorization.replace("Bearer ", "")
-
-    # TODO: проверить api_key в базе данных и списать паспорт
-    # Пока принимаем любой непустой ключ
     if not api_key:
         raise HTTPException(status_code=401, detail="Неверный API ключ")
 
-    # Read file
+    print(f"Processing file: {file.filename}, type: {file.content_type}")
     file_bytes = await file.read()
 
-    # Check size (max 10MB)
     if len(file_bytes) > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Файл слишком большой (макс 10МБ)")
 
-    # Determine media type
     content_type = file.content_type or "image/jpeg"
     if content_type not in ["image/jpeg", "image/png", "image/webp", "application/pdf"]:
-        raise HTTPException(status_code=400, detail="Поддерживаются JPG, PNG, PDF")
+        print(f"Unsupported type: {content_type}, forcing image/jpeg")
+        content_type = "image/jpeg"
 
-    # Convert to base64
     file_b64 = base64.standard_b64encode(file_bytes).decode("utf-8")
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        print(f"Calling Claude API...")
 
         if content_type == "application/pdf":
-            # PDF document
             message = client.messages.create(
                 model="claude-opus-4-5",
                 max_tokens=1024,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": file_b64
-                            }
-                        },
-                        {"type": "text", "text": PASSPORT_PROMPT}
-                    ]
-                }]
+                messages=[{"role": "user", "content": [
+                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": file_b64}},
+                    {"type": "text", "text": PASSPORT_PROMPT}
+                ]}]
             )
         else:
-            # Image
             message = client.messages.create(
                 model="claude-opus-4-5",
                 max_tokens=1024,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": content_type,
-                                "data": file_b64
-                            }
-                        },
-                        {"type": "text", "text": PASSPORT_PROMPT}
-                    ]
-                }]
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": content_type, "data": file_b64}},
+                    {"type": "text", "text": PASSPORT_PROMPT}
+                ]}]
             )
 
-        # Parse response
         response_text = message.content[0].text.strip()
+        print(f"Claude response: {response_text[:200]}")
 
-        # Clean up JSON if needed
         if response_text.startswith("```"):
             response_text = response_text.split("```")[1]
             if response_text.startswith("json"):
                 response_text = response_text[4:]
 
         passport_data = json.loads(response_text)
-
-        # File is never saved — zero data retention
         del file_bytes
         del file_b64
 
         return {"success": True, "data": passport_data}
 
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=422, detail="Не удалось прочитать паспорт. Попробуйте более чёткое фото.")
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}, response: {response_text}")
+        raise HTTPException(status_code=422, detail="Не удалось прочитать паспорт.")
     except anthropic.APIError as e:
+        print(f"Anthropic API error: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка AI: {str(e)}")
     except Exception as e:
+        print(f"Unexpected error: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
 
 
