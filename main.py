@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Header
+from fastapi import FastAPI, File, UploadFile, HTTPException, Header, Body
 from fastapi.middleware.cors import CORSMiddleware
 import anthropic
 import base64
@@ -162,15 +162,6 @@ async def extract_passport(
         del file_bytes
         del file_b64
 
-        # Record in history (fire and forget)
-        try:
-            profile_id = credit_result.get("profile_id")
-            if profile_id and SUPABASE_URL and SUPABASE_SERVICE_KEY:
-                import asyncio
-                asyncio.create_task(record_history(profile_id, 1))
-        except:
-            pass
-
         return {
             "success": True,
             "data": passport_data,
@@ -188,6 +179,55 @@ async def extract_passport(
         print(f"Unexpected error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {str(e)}")
+
+
+@app.post("/record_history")
+async def record_history_endpoint(
+    body: dict = Body(...),
+    authorization: Optional[str] = Header(None)
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="API ключ не передан")
+    
+    api_key = authorization.replace("Bearer ", "").strip()
+    count = body.get("count", 1)
+    operator = body.get("operator", "Тур оператор")
+
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return {"success": True}
+
+    try:
+        # Get profile_id by api_key
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{SUPABASE_URL}/rest/v1/profiles?api_key=eq.{api_key}&select=id",
+                headers={
+                    "apikey": SUPABASE_SERVICE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"
+                },
+                timeout=5.0
+            )
+            profiles = resp.json()
+            if not profiles:
+                return {"success": False}
+            
+            profile_id = profiles[0]["id"]
+            
+            # Insert history record
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/processing_history",
+                headers={
+                    "apikey": SUPABASE_SERVICE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"profile_id": profile_id, "tourists_count": count, "operator": operator},
+                timeout=5.0
+            )
+        return {"success": True}
+    except Exception as e:
+        print(f"History error: {e}")
+        return {"success": False}
 
 
 @app.get("/health")
