@@ -20,8 +20,6 @@ app.add_middleware(
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
-print(f"Supabase configured: URL={bool(SUPABASE_URL)}, KEY={bool(SUPABASE_SERVICE_KEY)}")
-print(f"All env vars: {list(os.environ.keys())}")
 
 PASSPORT_PROMPT = """Ты эксперт по чтению паспортов. Извлеки все данные из этого паспорта и верни ТОЛЬКО JSON без лишнего текста.
 
@@ -44,6 +42,24 @@ PASSPORT_PROMPT = """Ты эксперт по чтению паспортов. �
 }
 
 Если какого-то поля нет — поставь null. Верни ТОЛЬКО JSON, без объяснений."""
+
+
+async def record_history(profile_id: str, count: int, operator: str = None):
+    """Record processing in history table"""
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/processing_history",
+                headers={
+                    "apikey": SUPABASE_SERVICE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"profile_id": profile_id, "tourists_count": count, "operator": operator},
+                timeout=5.0
+            )
+    except:
+        pass
 
 
 async def check_and_use_credit(api_key: str) -> dict:
@@ -146,10 +162,20 @@ async def extract_passport(
         del file_bytes
         del file_b64
 
+        # Record in history (fire and forget)
+        try:
+            profile_id = credit_result.get("profile_id")
+            if profile_id and SUPABASE_URL and SUPABASE_SERVICE_KEY:
+                import asyncio
+                asyncio.create_task(record_history(profile_id, 1))
+        except:
+            pass
+
         return {
             "success": True,
             "data": passport_data,
-            "credits_left": credit_result.get("credits_left")
+            "credits_left": credit_result.get("credits_left"),
+            "total_processed": credit_result.get("total_processed")
         }
 
     except json.JSONDecodeError as e:
