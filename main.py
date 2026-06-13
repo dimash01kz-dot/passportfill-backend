@@ -233,3 +233,198 @@ async def record_history_endpoint(
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# ── Google API Setup ──────────────────────────────────────────
+import re
+from datetime import datetime
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+SPREADSHEET_ID = "1tbQXU_gQwiY_drbO4cWt0-Jg4gK0PY47wGB_1TEUleU"
+TEMPLATE_DOC_ID = "1XSjOVbCFwykLVi5AhRV_HtfDK-zo4XMB"
+
+def get_google_services():
+    if not GOOGLE_CREDENTIALS_JSON:
+        return None, None
+    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=[
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+    )
+    docs = build("docs", "v1", credentials=creds)
+    sheets = build("sheets", "v4", credentials=creds)
+    drive = build("drive", "v3", credentials=creds)
+    return docs, sheets, drive
+
+
+@app.post("/create_contract")
+async def create_contract(
+    body: dict = Body(...),
+    authorization: Optional[str] = Header(None)
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="API ключ не передан")
+
+    api_key = authorization.replace("Bearer ", "").strip()
+    tour_data = body.get("tour", {})
+    tourists = body.get("tourists", [])
+    contract_num = body.get("contract_num", "")
+    agency = body.get("agency", {})
+
+    if not tourists:
+        raise HTTPException(status_code=400, detail="Нет данных туристов")
+
+    try:
+        docs_svc, sheets_svc, drive_svc = get_google_services()
+        if not docs_svc:
+            raise HTTPException(status_code=500, detail="Google API не настроен")
+
+        # 1. Copy template doc
+        today = datetime.now().strftime("%d.%m.%Y")
+        copy_title = f"Договор №{contract_num} от {today}"
+        copied = drive_svc.files().copy(
+            fileId=TEMPLATE_DOC_ID,
+            body={"name": copy_title}
+        ).execute()
+        new_doc_id = copied["id"]
+
+        # Make it accessible
+        drive_svc.permissions().create(
+            fileId=new_doc_id,
+            body={"type": "anyone", "role": "reader"}
+        ).execute()
+
+        # 2. Build replacements
+        main_tourist = tourists[0]
+        tourist_fio = f"{main_tourist.get('last_name', '')} {main_tourist.get('first_name', '')}".strip()
+        tourist_iin = main_tourist.get("iin", "")
+
+        # Passport table rows
+        passport_rows = ""
+        for t in tourists:
+            passport_rows += f"{t.get('last_name','')} {t.get('first_name','')} | {t.get('birth_date','')} | {t.get('passport_series','')}{t.get('passport_number','')} | {t.get('expire_date','')} | {t.get('citizenship','KAZ')}\n"
+
+        price_kzt = tour_data.get("price_kzt", "")
+        price_currency = tour_data.get("price_currency", "")
+        price_currency_val = tour_data.get("price_currency_val", "")
+
+        replacements = {
+            "{{НОМЕР_ДОГОВОРА}}": str(contract_num),
+            "____": str(contract_num),
+            "____________имя_фамилия__ИИН______": f"{tourist_fio}, ИИН {tourist_iin}",
+            "___ИМЯ___ФАМИЛИЯ___": tourist_fio,
+            "___НОМЕР ДОГОВОРА___": str(contract_num),
+            "ДАТА ТЕКУЩАЯ": today,
+            "______СУММА____": str(price_kzt),
+            "___СУММА ПРОПИСЬЮ___": tour_data.get("price_words", ""),
+            "______СУММА_В_ЕВРО/USD___": f"{price_currency_val} {price_currency}",
+            "___СТРАНА___ГОРОД___": f"{tour_data.get('country','')} / {tour_data.get('city','')}",
+            "___ДАТА НАЧАЛА___": tour_data.get("date_start", ""),
+            "___ДАТА ОКОНЧАНИЕ___": tour_data.get("date_end", ""),
+            "НАЗВАНИЕ ОТЕЛЯ": tour_data.get("hotel_name", ""),
+            "КОЛИЧЕСТВО ЗВЕЗД": tour_data.get("hotel_stars", ""),
+            "СТРАНА": tour_data.get("country", ""),
+            "ТИП НОМЕРА": tour_data.get("room_type", ""),
+            "ТИП ПИТАНИЯ": tour_data.get("meal_type", ""),
+            "ДАТА НАЧАЛА ДАТА ОКОНЧАНИЯ": f"{tour_data.get('date_start','')} - {tour_data.get('date_end','')}",
+            "КОЛИЧЕСВТО": str(len(tourists)),
+            "Количество гостей": str(len(tourists)),
+            "ИНФОРМАЦИЯ О СТРАХОВКЕ, СУММА ПОКРЫТИЕ ДАТЫ": tour_data.get("insurance", ""),
+            "ИМЯ ФАМИЛИЯ": tourist_fio,
+        }
+
+        # Build batch update requests
+        requests = []
+        for old_text, new_text in replacements.items():
+            requests.append({
+                "replaceAllText": {
+                    "containsText": {"text": old_text, "matchCase": False},
+                    "replaceText": new_text
+                }
+            })
+
+        # Add flight info
+        flights = tour_data.get("flights", [])
+        for i, flight in enumerate(flights[:2]):
+            flight_str = f"{flight.get('route','')} | {flight.get('airline','')} | {flight.get('number','')} | {flight.get('time','')} | {flight.get('date','')} | {flight.get('class','Эконом')}"
+            if i == 0:
+                requests.append({
+                    "replaceAllText": {
+                        "containsText": {"text": "ВЫЛЕТ ГОРОД ПРИЛЕТ ГОРОД", "matchCase": False},
+                        "replaceText": flight.get("route", "")
+                    }
+                })
+                requests.append({
+                    "replaceAllText": {
+                        "containsText": {"text": "НАЗВАНИЕ АВИАЛИНИИ", "matchCase": False},
+                        "replaceText": flight.get("airline", "")
+                    }
+                })
+                requests.append({
+                    "replaceAllText": {
+                        "containsText": {"text": "НОМЕР РЕЙСА", "matchCase": False},
+                        "replaceText": flight.get("number", "")
+                    }
+                })
+
+        # Apply replacements
+        docs_svc.documents().batchUpdate(
+            documentId=new_doc_id,
+            body={"requests": requests}
+        ).execute()
+
+        # 3. Add row to Google Sheets
+        row_data = [
+            "",  # # - auto
+            today,  # Дата создания
+            tour_data.get("date_start", ""),
+            tour_data.get("date_end", ""),
+            body.get("trip_type", "пакетный тур"),
+            "",  # Deadline оплаты
+            tour_data.get("country", ""),
+            tourist_fio,
+            str(len(tourists)),
+            agency.get("manager", ""),
+            "в работе",
+            tourist_iin,
+            tour_data.get("operator", ""),
+            tour_data.get("booking_num", ""),
+            str(price_kzt),
+            f"{price_currency_val} {price_currency}",
+            "",  # цена туроператора
+            "",  # цена туроператора в валюте
+            "",  # Доход
+            f"N{contract_num} от {today}",
+            tour_data.get("hotel_name", ""),
+            "",  # чек
+            body.get("tourist_phone", ""),
+        ]
+
+        sheets_svc.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="2025!A:W",
+            valueInputOption="USER_ENTERED",
+            body={"values": [row_data]}
+        ).execute()
+
+        # 4. Return doc link
+        doc_link = f"https://docs.google.com/document/d/{new_doc_id}/export?format=docx"
+        view_link = f"https://docs.google.com/document/d/{new_doc_id}/edit"
+
+        return {
+            "success": True,
+            "doc_id": new_doc_id,
+            "download_link": doc_link,
+            "view_link": view_link,
+            "title": copy_title
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Ошибка создания договора: {str(e)}")
