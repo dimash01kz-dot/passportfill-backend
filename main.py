@@ -285,145 +285,159 @@ async def create_contract(
         if not docs_svc:
             raise HTTPException(status_code=500, detail="Google API не настроен")
 
-        # 1. Copy template doc
+        # 1. Download template and fill with python-docx
+        from docx import Document
+        import googleapiclient.http
+        import io
+
         today = datetime.now().strftime("%d.%m.%Y")
         copy_title = f"Договор №{contract_num} от {today}"
-        copied = drive_svc.files().copy(
+
+        # Download template as docx
+        request = drive_svc.files().export_media(
             fileId=TEMPLATE_DOC_ID,
-            body={
-                "name": copy_title,
-                "parents": ["1_42pvO1Bqh0Gh1lLpCBGDfNzWnnwhI3h"]
-            }
-        ).execute()
-        new_doc_id = copied["id"]
+            mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        file_buffer = io.BytesIO()
+        downloader = googleapiclient.http.MediaIoBaseDownload(file_buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        file_buffer.seek(0)
 
-        # Make it accessible
-        drive_svc.permissions().create(
-            fileId=new_doc_id,
-            body={"type": "anyone", "role": "reader"}
-        ).execute()
-
-        # 2. Build replacements
+        # 2. Fill placeholders using python-docx
         main_tourist = tourists[0]
         tourist_fio = f"{main_tourist.get('last_name', '')} {main_tourist.get('first_name', '')}".strip()
         tourist_iin = main_tourist.get("iin", "")
-
-        # Passport table rows
-        passport_rows = ""
-        for t in tourists:
-            passport_rows += f"{t.get('last_name','')} {t.get('first_name','')} | {t.get('birth_date','')} | {t.get('passport_series','')}{t.get('passport_number','')} | {t.get('expire_date','')} | {t.get('citizenship','KAZ')}\n"
-
         price_kzt = tour_data.get("price_kzt", "")
-        price_currency = tour_data.get("price_currency", "")
+        price_currency = tour_data.get("price_currency", "USD")
         price_currency_val = tour_data.get("price_currency_val", "")
+        flights = tour_data.get("flights", [])
 
         replacements = {
             "{{НОМЕР_ДОГОВОРА}}": str(contract_num),
-            "____": str(contract_num),
-            "____________имя_фамилия__ИИН______": f"{tourist_fio}, ИИН {tourist_iin}",
-            "___ИМЯ___ФАМИЛИЯ___": tourist_fio,
-            "___НОМЕР ДОГОВОРА___": str(contract_num),
-            "ДАТА ТЕКУЩАЯ": today,
-            "______СУММА____": str(price_kzt),
-            "___СУММА ПРОПИСЬЮ___": tour_data.get("price_words", ""),
-            "______СУММА_В_ЕВРО/USD___": f"{price_currency_val} {price_currency}",
-            "___СТРАНА___ГОРОД___": f"{tour_data.get('country','')} / {tour_data.get('city','')}",
-            "___ДАТА НАЧАЛА___": tour_data.get("date_start", ""),
-            "___ДАТА ОКОНЧАНИЕ___": tour_data.get("date_end", ""),
-            "НАЗВАНИЕ ОТЕЛЯ": tour_data.get("hotel_name", ""),
-            "КОЛИЧЕСТВО ЗВЕЗД": tour_data.get("hotel_stars", ""),
-            "СТРАНА": tour_data.get("country", ""),
-            "ТИП НОМЕРА": tour_data.get("room_type", ""),
-            "ТИП ПИТАНИЯ": tour_data.get("meal_type", ""),
-            "ДАТА НАЧАЛА ДАТА ОКОНЧАНИЯ": f"{tour_data.get('date_start','')} - {tour_data.get('date_end','')}",
-            "КОЛИЧЕСВТО": str(len(tourists)),
-            "Количество гостей": str(len(tourists)),
-            "ИНФОРМАЦИЯ О СТРАХОВКЕ, СУММА ПОКРЫТИЕ ДАТЫ": tour_data.get("insurance", ""),
-            "ИМЯ ФАМИЛИЯ": tourist_fio,
+            "{{СТОРОНА_2}}": f"{tourist_fio}, ИИН {tourist_iin}",
+            "{{СУММА_ТНГ}}": str(price_kzt),
+            "{{СУММА_ПРОПИСЬЮ}}": body.get("price_words", tour_data.get("price_words", "")),
+            "{{СУММА_ВАЛЮТА}}": f"{price_currency_val} {price_currency}",
+            "{{ФИО_ТУРИСТА}}": tourist_fio,
+            "{{ДАТА}}": today,
+            "{{СТРАНА_ГОРОД}}": f"{tour_data.get('country','')} / {tour_data.get('city','')}",
+            "{{ДАТА_НАЧАЛА}}": tour_data.get("date_start", ""),
+            "{{ДАТА_ОКОНЧАНИЯ}}": tour_data.get("date_end", ""),
+            "{{ОТЕЛЬ}}": tour_data.get("hotel_name", ""),
+            "{{ЗВЕЗДЫ}}": tour_data.get("hotel_stars", ""),
+            "{{СТРАНА}}": tour_data.get("country", ""),
+            "{{ТИП_НОМЕРА}}": tour_data.get("room_type", ""),
+            "{{ПИТАНИЕ}}": tour_data.get("meal_type", ""),
+            "{{ДАТЫ_ТУРА}}": f"{tour_data.get('date_start','')} - {tour_data.get('date_end','')}",
+            "{{КОЛ_ТУРИСТОВ}}": str(len(tourists)),
+            "{{СТРАХОВКА}}": tour_data.get("insurance", ""),
+            "{{ТРАНСФЕР}}": tour_data.get("transfer", ""),
+            "{{МАРШРУТ_1}}": flights[0].get("route", "") if len(flights) > 0 else "",
+            "{{АВИАКОМПАНИЯ_1}}": flights[0].get("airline", "") if len(flights) > 0 else "",
+            "{{НОМЕР_РЕЙСА_1}}": flights[0].get("number", "") if len(flights) > 0 else "",
+            "{{ВРЕМЯ_1}}": flights[0].get("time", "") if len(flights) > 0 else "",
+            "{{ДАТА_РЕЙСА_1}}": flights[0].get("date", "") if len(flights) > 0 else "",
+            "{{КЛАСС_1}}": flights[0].get("class", "") if len(flights) > 0 else "",
+            "{{МАРШРУТ_2}}": flights[1].get("route", "") if len(flights) > 1 else "",
+            "{{АВИАКОМПАНИЯ_2}}": flights[1].get("airline", "") if len(flights) > 1 else "",
+            "{{НОМЕР_РЕЙСА_2}}": flights[1].get("number", "") if len(flights) > 1 else "",
+            "{{ВРЕМЯ_2}}": flights[1].get("time", "") if len(flights) > 1 else "",
+            "{{ДАТА_РЕЙСА_2}}": flights[1].get("date", "") if len(flights) > 1 else "",
+            "{{КЛАСС_2}}": flights[1].get("class", "") if len(flights) > 1 else "",
         }
 
-        # Build batch update requests
-        requests = []
-        for old_text, new_text in replacements.items():
-            requests.append({
-                "replaceAllText": {
-                    "containsText": {"text": old_text, "matchCase": False},
-                    "replaceText": new_text
-                }
-            })
+        def replace_text(text):
+            for k, v in replacements.items():
+                text = text.replace(k, str(v) if v else "")
+            return text
 
-        # Add flight info
-        flights = tour_data.get("flights", [])
-        for i, flight in enumerate(flights[:2]):
-            flight_str = f"{flight.get('route','')} | {flight.get('airline','')} | {flight.get('number','')} | {flight.get('time','')} | {flight.get('date','')} | {flight.get('class','Эконом')}"
-            if i == 0:
-                requests.append({
-                    "replaceAllText": {
-                        "containsText": {"text": "ВЫЛЕТ ГОРОД ПРИЛЕТ ГОРОД", "matchCase": False},
-                        "replaceText": flight.get("route", "")
-                    }
-                })
-                requests.append({
-                    "replaceAllText": {
-                        "containsText": {"text": "НАЗВАНИЕ АВИАЛИНИИ", "matchCase": False},
-                        "replaceText": flight.get("airline", "")
-                    }
-                })
-                requests.append({
-                    "replaceAllText": {
-                        "containsText": {"text": "НОМЕР РЕЙСА", "matchCase": False},
-                        "replaceText": flight.get("number", "")
-                    }
-                })
+        doc = Document(file_buffer)
+        for para in doc.paragraphs:
+            for run in para.runs:
+                run.text = replace_text(run.text)
+            if "{{ПАСПОРТНЫЕ_ДАННЫЕ}}" in para.text:
+                para.clear()
+                for t in tourists:
+                    para.add_run(
+                        f"{t.get('last_name','')} {t.get('first_name','')}  "
+                        f"{t.get('birth_date','')}  "
+                        f"{t.get('passport_series','')}{t.get('passport_number','')}  "
+                        f"{t.get('expire_date','')}  "
+                        f"{t.get('citizenship','KAZ')}\n"
+                    )
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        for run in para.runs:
+                            run.text = replace_text(run.text)
+                        if "{{ПАСПОРТНЫЕ_ДАННЫЕ}}" in para.text:
+                            para.clear()
+                            for t in tourists:
+                                para.add_run(
+                                    f"{t.get('last_name','')} {t.get('first_name','')}  "
+                                    f"{t.get('birth_date','')}  "
+                                    f"{t.get('passport_series','')}{t.get('passport_number','')}  "
+                                    f"{t.get('expire_date','')}  "
+                                    f"{t.get('citizenship','KAZ')}\n"
+                                )
 
-        # Apply replacements
-        docs_svc.documents().batchUpdate(
-            documentId=new_doc_id,
-            body={"requests": requests}
+        # 3. Save to buffer and upload to Drive folder
+        out_buffer = io.BytesIO()
+        doc.save(out_buffer)
+        out_buffer.seek(0)
+
+        file_metadata = {
+            "name": copy_title + ".docx",
+            "parents": ["1_42pvO1Bqh0Gh1lLpCBGDfNzWnnwhI3h"]
+        }
+        media = googleapiclient.http.MediaIoBaseUpload(
+            out_buffer,
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        uploaded = drive_svc.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id"
+        ).execute()
+        new_file_id = uploaded["id"]
+
+        drive_svc.permissions().create(
+            fileId=new_file_id,
+            body={"type": "anyone", "role": "reader"}
         ).execute()
 
-        # 3. Add row to Google Sheets
-        row_data = [
-            "",  # # - auto
-            today,  # Дата создания
-            tour_data.get("date_start", ""),
-            tour_data.get("date_end", ""),
-            body.get("trip_type", "пакетный тур"),
-            "",  # Deadline оплаты
-            tour_data.get("country", ""),
-            tourist_fio,
-            str(len(tourists)),
-            agency.get("manager", ""),
-            "в работе",
-            tourist_iin,
-            tour_data.get("operator", ""),
-            tour_data.get("booking_num", ""),
-            str(price_kzt),
-            f"{price_currency_val} {price_currency}",
-            "",  # цена туроператора
-            "",  # цена туроператора в валюте
-            "",  # Доход
-            f"N{contract_num} от {today}",
-            tour_data.get("hotel_name", ""),
-            "",  # чек
-            body.get("tourist_phone", ""),
-        ]
+        # 4. Add row to Google Sheets
+        if sheets_svc:
+            row_data = [
+                "", today,
+                tour_data.get("date_start", ""), tour_data.get("date_end", ""),
+                body.get("trip_type", "пакетный тур"), "",
+                tour_data.get("country", ""), tourist_fio,
+                str(len(tourists)), agency.get("manager", ""),
+                agency.get("status", "в работе"), tourist_iin,
+                tour_data.get("operator", ""), "",
+                str(price_kzt), f"{price_currency_val} {price_currency}",
+                "", "", "",
+                f"N{contract_num} от {today}", tour_data.get("hotel_name", ""),
+                body.get("note", ""), body.get("tourist_phone", ""),
+            ]
+            sheets_svc.spreadsheets().values().append(
+                spreadsheetId=SPREADSHEET_ID,
+                range="2025!A:W",
+                valueInputOption="USER_ENTERED",
+                body={"values": [row_data]}
+            ).execute()
 
-        sheets_svc.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range="2025!A:W",
-            valueInputOption="USER_ENTERED",
-            body={"values": [row_data]}
-        ).execute()
-
-        # 4. Return doc link
-        doc_link = f"https://docs.google.com/document/d/{new_doc_id}/export?format=docx"
-        view_link = f"https://docs.google.com/document/d/{new_doc_id}/edit"
+        download_link = f"https://drive.google.com/uc?export=download&id={new_file_id}"
+        view_link = f"https://drive.google.com/file/d/{new_file_id}/view"
 
         return {
             "success": True,
-            "doc_id": new_doc_id,
-            "download_link": doc_link,
+            "doc_id": new_file_id,
+            "download_link": download_link,
             "view_link": view_link,
             "title": copy_title
         }
