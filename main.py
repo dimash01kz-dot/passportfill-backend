@@ -290,7 +290,10 @@ async def create_contract(
         copy_title = f"Договор №{contract_num} от {today}"
         copied = drive_svc.files().copy(
             fileId=TEMPLATE_DOC_ID,
-            body={"name": copy_title}
+            body={
+                "name": copy_title,
+                "parents": ["1_42pvO1Bqh0Gh1lLpCBGDfNzWnnwhI3h"]
+            }
         ).execute()
         new_doc_id = copied["id"]
 
