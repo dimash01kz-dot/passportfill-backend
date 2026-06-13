@@ -293,11 +293,8 @@ async def create_contract(
         today = datetime.now().strftime("%d.%m.%Y")
         copy_title = f"Договор №{contract_num} от {today}"
 
-        # Download template as docx
-        request = drive_svc.files().export_media(
-            fileId=TEMPLATE_DOC_ID,
-            mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+        # Download template as docx (it's already a .docx file, not Google Doc)
+        request = drive_svc.files().get_media(fileId=TEMPLATE_DOC_ID)
         file_buffer = io.BytesIO()
         downloader = googleapiclient.http.MediaIoBaseDownload(file_buffer, request)
         done = False
