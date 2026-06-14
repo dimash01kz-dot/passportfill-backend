@@ -381,30 +381,12 @@ async def create_contract(
                                     f"{t.get('citizenship','KAZ')}\n"
                                 )
 
-        # 3. Save to buffer and upload to Drive folder
+        # 3. Save to buffer
         out_buffer = io.BytesIO()
         doc.save(out_buffer)
         out_buffer.seek(0)
-
-        file_metadata = {
-            "name": copy_title + ".docx",
-            "parents": ["1_42pvO1Bqh0Gh1lLpCBGDfNzWnnwhI3h"]
-        }
-        media = googleapiclient.http.MediaIoBaseUpload(
-            out_buffer,
-            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
-        uploaded = drive_svc.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id"
-        ).execute()
-        new_file_id = uploaded["id"]
-
-        drive_svc.permissions().create(
-            fileId=new_file_id,
-            body={"type": "anyone", "role": "reader"}
-        ).execute()
+        docx_bytes = out_buffer.read()
+        docx_b64 = base64.standard_b64encode(docx_bytes).decode("utf-8")
 
         # 4. Add row to Google Sheets
         if sheets_svc:
@@ -428,14 +410,10 @@ async def create_contract(
                 body={"values": [row_data]}
             ).execute()
 
-        download_link = f"https://drive.google.com/uc?export=download&id={new_file_id}"
-        view_link = f"https://drive.google.com/file/d/{new_file_id}/view"
-
         return {
             "success": True,
-            "doc_id": new_file_id,
-            "download_link": download_link,
-            "view_link": view_link,
+            "file_base64": docx_b64,
+            "filename": copy_title + ".docx",
             "title": copy_title
         }
 
