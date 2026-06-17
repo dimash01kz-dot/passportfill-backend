@@ -58,7 +58,7 @@ async def amount_to_words_kzt(amount):
         return ""
 
 
-def record_history(profile_id: str, count: int, operator: str = None):
+async def record_history(profile_id: str, count: int, operator: str = None):
     """Record processing in history table"""
     try:
         async with httpx.AsyncClient() as client:
