@@ -305,7 +305,6 @@ async def create_contract(
         import io
 
         today = datetime.now().strftime("%d.%m.%Y")
-copy_title_placeholder = True  # will be set below after tourist data
 
         # Download template as docx (it's already a .docx file, not Google Doc)
         request = drive_svc.files().get_media(fileId=TEMPLATE_DOC_ID)
@@ -367,35 +366,70 @@ copy_title_placeholder = True  # will be set below after tourist data
             return text
 
         doc = Document(file_buffer)
+
+        # First pass: replace simple placeholders everywhere (paragraphs + table cells)
         for para in doc.paragraphs:
             for run in para.runs:
                 run.text = replace_text(run.text)
-            if "{{ПАСПОРТНЫЕ_ДАННЫЕ}}" in para.text:
-                para.clear()
-                for t in tourists:
-                    para.add_run(
-                        f"{t.get('last_name','')} {t.get('first_name','')}  "
-                        f"{t.get('birth_date','')}  "
-                        f"{t.get('passport_series','')}{t.get('passport_number','')}  "
-                        f"{t.get('expire_date','')}  "
-                        f"{t.get('citizenship','KAZ')}\n"
-                    )
+
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for para in cell.paragraphs:
                         for run in para.runs:
                             run.text = replace_text(run.text)
-                        if "{{ПАСПОРТНЫЕ_ДАННЫЕ}}" in para.text:
-                            para.clear()
-                            for t in tourists:
-                                para.add_run(
-                                    f"{t.get('last_name','')} {t.get('first_name','')}  "
-                                    f"{t.get('birth_date','')}  "
-                                    f"{t.get('passport_series','')}{t.get('passport_number','')}  "
-                                    f"{t.get('expire_date','')}  "
-                                    f"{t.get('citizenship','KAZ')}\n"
-                                )
+
+        # Second pass: find passport data table row and fill/duplicate per tourist
+        import copy
+        from docx.table import _Row
+
+        def fill_passport_row(row, tourist):
+            values = [
+                f"{tourist.get('last_name','')} {tourist.get('first_name','')}".strip(),
+                tourist.get('birth_date', ''),
+                f"{tourist.get('passport_series','')}{tourist.get('passport_number','')}".strip(),
+                tourist.get('expire_date', ''),
+                tourist.get('citizenship', 'KAZ'),
+            ]
+            for i, cell in enumerate(row.cells):
+                if i >= len(values):
+                    break
+                if cell.paragraphs:
+                    p = cell.paragraphs[0]
+                    # clear extra paragraphs
+                    for extra_p in cell.paragraphs[1:]:
+                        extra_p._element.getparent().remove(extra_p._element)
+                    if p.runs:
+                        p.runs[0].text = values[i]
+                        for extra_run in p.runs[1:]:
+                            extra_run.text = ""
+                    else:
+                        p.add_run(values[i])
+                else:
+                    cell.add_paragraph(values[i])
+
+        for table in doc.tables:
+            target_row = None
+            for row in table.rows:
+                row_text = "".join(cell.text for cell in row.cells)
+                if "{{ПАСПОРТНЫЕ_ДАННЫЕ}}" in row_text:
+                    target_row = row
+                    break
+            if target_row is None:
+                continue
+
+            # Fill first tourist into the template row
+            fill_passport_row(target_row, tourists[0])
+
+            # Duplicate row for remaining tourists
+            prev_tr = target_row._tr
+            for t in tourists[1:]:
+                new_tr = copy.deepcopy(prev_tr)
+                prev_tr.addnext(new_tr)
+                new_row = _Row(new_tr, table)
+                fill_passport_row(new_row, t)
+                prev_tr = new_tr
+            break
 
         # 3. Save to buffer
         out_buffer = io.BytesIO()
