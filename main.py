@@ -330,7 +330,7 @@ async def create_contract(
             "{{НОМЕР_ДОГОВОРА}}": str(contract_num),
             "{{СТОРОНА_2}}": f"{tourist_fio_cyr}, ИИН №{tourist_iin}",
             "{{СУММА_ТНГ}}": str(price_kzt),
-            "{{СУММА_ПРОПИСЬЮ}}": body.get("price_words") or amount_to_words_kzt(price_kzt),
+            "{{СУММА_ПРОПИСЬЮ}}": tour_data.get("price_words") or amount_to_words_kzt(price_kzt),
             "{{СУММА_ВАЛЮТА}}": f"{price_currency_val} {price_currency}",
             "{{ФИО_ТУРИСТА}}": tourist_fio_cyr,
             "{{ДАТА}}": today,
@@ -440,6 +440,17 @@ async def create_contract(
 
         # 4. Add row to Google Sheets
         if sheets_svc:
+            operator_price_kzt = tour_data.get("operator_price_kzt", "")
+            operator_price_currency_val = tour_data.get("operator_price_currency_val", "")
+            operator_price_currency = tour_data.get("operator_price_currency", "")
+
+            income = ""
+            try:
+                if price_kzt and operator_price_kzt:
+                    income = str(round(float(str(price_kzt).replace(",", ".")) - float(str(operator_price_kzt).replace(",", "."))))
+            except Exception:
+                income = ""
+
             row_data = [
                 "", today,
                 tour_data.get("date_start", ""), tour_data.get("date_end", ""),
@@ -449,7 +460,8 @@ async def create_contract(
                 agency.get("status", "в работе"), tourist_iin,
                 tour_data.get("operator", ""), "",
                 str(price_kzt), f"{price_currency_val} {price_currency}",
-                "", "", "",
+                str(operator_price_kzt), f"{operator_price_currency_val} {operator_price_currency}",
+                income,
                 f"N{contract_num} от {today}", tour_data.get("hotel_name", ""),
                 body.get("note", ""), body.get("tourist_phone", ""),
             ]
