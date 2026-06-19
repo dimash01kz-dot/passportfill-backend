@@ -386,10 +386,7 @@ async def create_contract(
         def fill_passport_row(row, tourist):
             values = [
                 f"{tourist.get('last_name','')} {tourist.get('first_name','')}".strip(),
-                tourist.get('birth_date', ''),
-                f"{tourist.get('passport_series','')}{tourist.get('passport_number','')}".strip(),
-                tourist.get('expire_date', ''),
-                tourist.get('citizenship', 'KAZ'),
+                "", "", "", "",
             ]
             for i, cell in enumerate(row.cells):
                 if i >= len(values):
@@ -438,7 +435,7 @@ async def create_contract(
         docx_bytes = out_buffer.read()
         docx_b64 = base64.standard_b64encode(docx_bytes).decode("utf-8")
 
-        # 4. Add row to Google Sheets
+        # 4. Add row to Google Sheets (explicit row index to avoid append detection issues)
         if sheets_svc:
             operator_price_kzt = tour_data.get("operator_price_kzt", "")
             operator_price_currency_val = tour_data.get("operator_price_currency_val", "")
@@ -451,23 +448,33 @@ async def create_contract(
             except Exception:
                 income = ""
 
+            # Find next empty row by counting existing data in column B (Дата создания, always filled by us)
+            existing = sheets_svc.spreadsheets().values().get(
+                spreadsheetId=SPREADSHEET_ID,
+                range="2025!B:B"
+            ).execute()
+            existing_rows = existing.get("values", [])
+            data_row_count = max(len(existing_rows) - 1, 0)  # minus header row
+            next_num = data_row_count + 1
+            next_sheet_row = len(existing_rows) + 1  # 1-based row index to write to
+
             row_data = [
-                "", today,
+                str(next_num), today,
                 tour_data.get("date_start", ""), tour_data.get("date_end", ""),
                 body.get("trip_type", "пакетный тур"), "",
-                tour_data.get("country", ""), tourist_fio_cyr,
+                tour_data.get("country", ""), tourist_fio,
                 str(len(tourists)), agency.get("manager", ""),
                 agency.get("status", "в работе"), tourist_iin,
                 tour_data.get("operator", ""), "",
-                str(price_kzt), f"{price_currency_val} {price_currency}",
+                str(price_kzt), "",
                 str(operator_price_kzt), f"{operator_price_currency_val} {operator_price_currency}",
                 income,
                 f"N{contract_num} от {today}", tour_data.get("hotel_name", ""),
                 body.get("note", ""), body.get("tourist_phone", ""),
             ]
-            sheets_svc.spreadsheets().values().append(
+            sheets_svc.spreadsheets().values().update(
                 spreadsheetId=SPREADSHEET_ID,
-                range="2025!A:W",
+                range=f"2025!A{next_sheet_row}:W{next_sheet_row}",
                 valueInputOption="USER_ENTERED",
                 body={"values": [row_data]}
             ).execute()
