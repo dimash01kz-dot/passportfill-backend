@@ -455,7 +455,7 @@ async def create_contract(
                 "", today,
                 tour_data.get("date_start", ""), tour_data.get("date_end", ""),
                 body.get("trip_type", "пакетный тур"), "",
-                tour_data.get("country", ""), tourist_fio,
+                tour_data.get("country", ""), tourist_fio_cyr,
                 str(len(tourists)), agency.get("manager", ""),
                 agency.get("status", "в работе"), tourist_iin,
                 tour_data.get("operator", ""), "",
